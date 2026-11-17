@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+# output e file di lavoro
+spartiti/
+data/
+*.wav
+*.mp3

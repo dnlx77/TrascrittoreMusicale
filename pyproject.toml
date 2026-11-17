@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trascrittore"
+version = "0.1.0"
+description = "Da un brano audio a spartiti per pianoforte suonabili, in tre livelli"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "scipy",
+  "librosa>=0.10",
+  "soundfile",
+  "pretty_midi",
+  "music21>=9",
+  "verovio",
+  "cairosvg",
+  "pypdf",
+  "audio-separator[cpu]>=0.30",
+  "audioread",
+]
+
+[project.scripts]
+trascrivi = "trascrittore.cli:main"
+
+[tool.setuptools]
+packages = ["trascrittore"]
