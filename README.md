@@ -22,7 +22,8 @@ source .venv/bin/activate
 # Windows
 .venv\Scripts\activate
 
-pip install ./trascrittore-0.1.0          # oppure: pip install trascrittore-0.1.0.tar.gz
+pip install git+https://github.com/dnlx77/TrascrittoreMusicale
+# oppure, da una copia locale:  git clone https://github.com/dnlx77/TrascrittoreMusicale && pip install ./TrascrittoreMusicale
 ```
 
 Per il PDF serve la libreria grafica Cairo (`brew install cairo` su macOS, `apt install libcairo2` su Linux;
