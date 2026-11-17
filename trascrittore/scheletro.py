@@ -26,24 +26,36 @@ SMUFL_TEXT = {"\uea64": "\u266d", "\uea66": "\u266f", "\uea65": "\u266e", "\ueca
 
 # ---------------------------------------------------------------- tempo e battute
 def fix_beats(beat_t, tempo):
-    """Porta il tempo nell'intervallo 90-180 BPM raddoppiando/dimezzando i beat."""
+    """Porta il tempo nell'intervallo 75-160 BPM raddoppiando/dimezzando i beat."""
     beat_t = np.asarray(beat_t)
-    if tempo < 90:
+    if tempo < 75:
         mids = (beat_t[:-1] + beat_t[1:]) / 2
         beat_t = np.sort(np.concatenate([beat_t, mids]))
         tempo *= 2
-    elif tempo > 180:
+    elif tempo > 160:
         beat_t = beat_t[::2]
         tempo /= 2
     return beat_t, tempo
 
 
-def downbeat_phase(beat_t, mix, bass_audio):
-    """Sceglie su quale beat cadono i primi tempi (4/4): basso + accenti del mix."""
+def downbeat_phase(beat_t, mix, bass_audio, instr=None):
+    """Sceglie su quale beat cadono i primi tempi (4/4).
+
+    Indizio principale: gli accordi cambiano quasi sempre sul primo tempo (novità armonica
+    tra un beat e il precedente). Indizi secondari: attacchi del basso e accenti del mix."""
     on_b = librosa.onset.onset_strength(y=bass_audio, sr=SR, hop_length=HOP)
     on_m = librosa.onset.onset_strength(y=mix, sr=SR, hop_length=HOP)
     fr = np.clip(librosa.time_to_frames(beat_t, sr=SR, hop_length=HOP), 0, len(on_b) - 1)
     s = on_b[fr] / (on_b.max() + 1e-9) + 0.5 * on_m[fr] / (on_m.max() + 1e-9)
+    s = s / (s.mean() + 1e-9)
+    if instr is not None:
+        chroma = librosa.feature.chroma_cqt(y=librosa.effects.harmonic(instr), sr=SR, hop_length=HOP)
+        sync = librosa.util.sync(chroma, fr, aggregate=np.median)[:, 1:]  # chroma di ogni beat
+        sync = sync / (np.linalg.norm(sync, axis=0, keepdims=True) + 1e-9)
+        nov = np.zeros(len(beat_t))
+        nov[1:len(beat_t)] = 1 - np.sum(sync[:, 1:len(beat_t)] * sync[:, : len(beat_t) - 1], axis=0)[: len(beat_t) - 1]
+        nov = nov / (nov.mean() + 1e-9)
+        s = 0.5 * s + 1.5 * nov
     return int(np.argmax([s[p::4].mean() for p in range(4)]))
 
 
@@ -64,14 +76,18 @@ def chord_vocab(key):
     scale = MAJOR_SCALE if key["modo"] == "maggiore" else MINOR_SCALE
     scale_pcs = {(tonic + s) % 12 for s in scale}
     names, temps, prior, roots, quals = [], [], [], [], []
+    # triadi e settime: la settima si riconosce meglio ma si scrive come triade (sigle semplici)
+    forms = (("", (0, 4, 7), [1.0, 0.8, 0.9]), ("m", (0, 3, 7), [1.0, 0.8, 0.9]),
+             ("", (0, 4, 7, 10), [1.0, 0.8, 0.9, 0.6]), ("", (0, 4, 7, 11), [1.0, 0.8, 0.9, 0.6]),
+             ("m", (0, 3, 7, 10), [1.0, 0.8, 0.9, 0.6]))
     for r in range(12):
-        for q, ints in (("", (0, 4, 7)), ("m", (0, 3, 7))):
+        for q, ints, w in forms:
             pcs = [(r + i) % 12 for i in ints]
             t = np.zeros(12)
-            t[pcs] = [1.0, 0.8, 0.9]
+            t[pcs] = w
             names.append(NOTE_NAMES[r] + q)
             temps.append(t / np.linalg.norm(t))
-            diatonic = all(p in scale_pcs for p in pcs)
+            diatonic = all(p in scale_pcs for p in pcs[:3])
             # in minore il V maggiore (sensibile) è comunissimo
             if key["modo"] == "minore" and r == (tonic + 7) % 12 and q == "":
                 diatonic = True
@@ -81,7 +97,7 @@ def chord_vocab(key):
     return names, np.array(temps), np.array(prior), roots, quals
 
 
-def estimate_chords(instr, bass_audio, beat_t, duration, key, phase, beats_per_slot=2):
+def estimate_chords(instr, bass_audio, beat_t, duration, key, phase, beats_per_slot=1):
     harm = librosa.effects.harmonic(instr)
     chroma = librosa.feature.chroma_cqt(y=harm, sr=SR, hop_length=HOP, bins_per_octave=36)
     bchroma = librosa.feature.chroma_cqt(y=bass_audio, sr=SR, hop_length=HOP, fmin=librosa.note_to_hz("C1"), n_octaves=3)
@@ -116,13 +132,21 @@ def estimate_chords(instr, bass_audio, beat_t, duration, key, phase, beats_per_s
     F /= np.linalg.norm(F, axis=0, keepdims=True) + 1e-9
     B = np.array(bfeats).T
     B /= B.max(axis=0, keepdims=True) + 1e-9
-    sim = temps @ F + 0.25 * B[roots, :]  # bonus se il basso suona la fondamentale
+    sim = temps @ F + 0.4 * B[roots, :]  # bonus se il basso suona la fondamentale
     logp = 10 * sim + np.log(prior)[:, None]
     prob = np.exp(logp - logp.max(axis=0, keepdims=True))
     prob /= prob.sum(axis=0, keepdims=True)
     n = len(names)
-    trans = np.full((n, n), 0.4 / (n - 1))
-    np.fill_diagonal(trans, 0.6)
+    # resta sullo stesso accordo per beat successivi; cambiare costa meno sul primo tempo
+    stay = 0.85 if beats_per_slot == 1 else 0.6
+    trans = np.full((n, n), (1 - stay) / (n - 1))
+    np.fill_diagonal(trans, stay)
+    # varianti (triade/settima) dello stesso accordo: passaggio quasi gratuito
+    for i in range(n):
+        for j in range(n):
+            if i != j and names[i] == names[j]:
+                trans[i, j] = (1 - stay) / 2
+    trans /= trans.sum(axis=1, keepdims=True)
     path = librosa.sequence.viterbi_discriminative(prob, trans)
     energy = np.array(energy)
     silent = energy < 0.1 * np.median(energy)
@@ -228,6 +252,25 @@ def merge_chords(chords):
     out = []
     for c in chords:
         c = {k: v for k, v in c.items() if k != "basso_chroma"}
+        if out and out[-1]["accordo"] == c["accordo"]:
+            out[-1]["durata_beat"] += c["durata_beat"]
+        else:
+            out.append(c)
+    return out
+
+
+def snap_chords(chords, phase, step=2):
+    """Nel pop gli accordi cambiano quasi sempre sul primo o terzo tempo: allinea i cambi
+    alla mezza battuta più vicina (corregge i ritardi di un beat del rilevamento)."""
+    if not chords:
+        return chords
+    end = chords[-1]["beat"] + chords[-1]["durata_beat"]
+    starts = [chords[0]["beat"]] + [phase + step * round((c["beat"] - phase) / step) for c in chords[1:]]
+    out = []
+    for c, b0, b1 in zip(chords, starts, starts[1:] + [end]):
+        if b1 <= b0:
+            continue
+        c = dict(c, beat=float(b0), durata_beat=float(b1 - b0))
         if out and out[-1]["accordo"] == c["accordo"]:
             out[-1]["durata_beat"] += c["durata_beat"]
         else:
@@ -414,7 +457,7 @@ def main(name, root=None):
     duration = len(mix) / SR
 
     beat_t, tempo = fix_beats(raw["beat_times"], raw["tempo_bpm"])
-    phase = downbeat_phase(beat_t, mix, bass_audio)
+    phase = downbeat_phase(beat_t, mix, bass_audio, instr)
     key = raw["tonalita"]
     chords_slots = estimate_chords(instr, bass_audio, beat_t, duration, key, phase)
     melody = simplify_melody(raw["melodia"], beat_t, key)
@@ -425,8 +468,8 @@ def main(name, root=None):
         shift = 12 * int(round((67 - med) / 12))
         for n in melody:
             n["pitch"] += shift
-    bass = bass_line(chords_slots, raw["basso"], beat_t)
-    chords = merge_chords(chords_slots)
+    chords = snap_chords(merge_chords(chords_slots), phase)
+    bass = bass_line(chords, raw["basso"], beat_t)
     n_bars = int((len(beat_t) - phase) // 4)
     struct = structure(mix, beat_t, phase, n_bars)
 
