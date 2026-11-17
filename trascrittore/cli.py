@@ -42,7 +42,7 @@ def silenzioso(attivo=True):
         yield
 
 
-def trascrivi(audio, uscita, livelli, cache, audio_anteprima, dettagli):
+def trascrivi(audio, uscita, livelli, cache, audio_anteprima, dettagli, stile_sx="accordi"):
     from . import analizza, arrangia, scheletro
     from .separa import separa
 
@@ -75,7 +75,7 @@ def trascrivi(audio, uscita, livelli, cache, audio_anteprima, dettagli):
         scheletro.main(nome, root=lavoro)
     passo(f"arrangio per pianoforte: {', '.join(livelli)}")
     with silenzioso(not dettagli):
-        arrangia.main(nome, livelli, root=lavoro)
+        arrangia.main(nome, livelli, root=lavoro, stile_sx=stile_sx)
 
     dest = Path(uscita) / nome
     dest.mkdir(parents=True, exist_ok=True)
@@ -123,10 +123,12 @@ def main(argv=None):
     ap.add_argument("--audio", dest="anteprima", action="store_true", help="crea anche un'anteprima audio mp3 di ogni spartito")
     ap.add_argument("--cache", default=str(Path.home() / ".cache" / "trascrittore"),
                     help="cartella di lavoro: tracce separate e modelli, riusate tra un'esecuzione e l'altra")
+    ap.add_argument("-s", "--sinistra", choices=["accordi", "classica"], default="accordi",
+                    help="mano sinistra: accordi (default) o classica (note singole: fondamentale, pattern, arpeggi)")
     ap.add_argument("--dettagli", action="store_true", help="mostra i messaggi tecnici delle librerie")
     a = ap.parse_args(argv)
     livelli = LIVELLI if a.livello == "tutti" else [a.livello]
-    ok = all([trascrivi(f, a.uscita, livelli, a.cache, a.anteprima, a.dettagli) for f in a.file])
+    ok = all([trascrivi(f, a.uscita, livelli, a.cache, a.anteprima, a.dettagli, a.sinistra) for f in a.file])
     print(f"\nSpartiti in: {Path(a.uscita).resolve()}")
     return 0 if ok else 1
 

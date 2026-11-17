@@ -4,9 +4,13 @@ Da un brano audio (anche una canzone completa, con voce e band) a **spartiti per
 
 | Livello | Mano destra | Mano sinistra | Tonalità |
 |---|---|---|---|
-| principiante | melodia a semiminime/minime, senza sincopi | una nota lunga per battuta (fondamentale) | trasportata, max 1 alterazione |
-| intermedio | melodia completa a crome | fondamentale–quinta–ottava–quinta | max 3 alterazioni |
-| avanzato | melodia armonizzata (bicordi/accordi) | arpeggi a crome con pedale | originale |
+| principiante | melodia a semiminime/minime, senza sincopi | un accordo tenuto per battuta | trasportata, max 1 alterazione |
+| intermedio | melodia completa a crome | accordi sul primo e terzo tempo (minime) | max 3 alterazioni |
+| avanzato | melodia armonizzata (bicordi/accordi) | basso grave sul primo tempo + accordi sugli altri | originale |
+
+Gli accordi della mano sinistra sono triadi nel rivolto più vicino al precedente, così la mano si sposta
+il meno possibile. Con `--sinistra classica` si torna alla mano sinistra a note singole
+(fondamentale tenuta / fondamentale–quinta–ottava–quinta / arpeggi a crome con pedale).
 
 Per ogni brano produce: PDF, MusicXML (si apre e si corregge in MuseScore), MIDI, un lead sheet
 (melodia + sigle) e `controllo.json` con le verifiche di suonabilità.
@@ -35,6 +39,7 @@ su Windows si installa con GTK). Senza Cairo il programma salva le pagine in SVG
 trascrivi brano.mp3                          # tutti e tre i livelli, in ./spartiti/<brano>/
 trascrivi brano.mp3 --livello principiante   # un solo livello
 trascrivi a.mp3 b.wav --uscita miei_spartiti --audio   # più brani + anteprima audio mp3
+trascrivi brano.mp3 --sinistra classica      # mano sinistra a note singole invece che ad accordi
 ```
 
 La prima esecuzione scarica il modello di separazione della voce (~70 MB). Un brano di 4 minuti richiede
