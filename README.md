@@ -55,3 +55,25 @@ quindi rigenerare gli spartiti dello stesso brano è molto più veloce.
 - Gli accordi sono solo maggiori/minori e qualche volta sbagliati; la melodia può perdere o aggiungere note.
 - Metro sempre 4/4; le intro a tempo libero escono confuse.
 - Le anteprime audio usano un sintetizzatore semplice, non un vero pianoforte.
+
+## Misurare la precisione
+
+`valutazione/` contiene un banco di prova con brani sintetici a risposta nota (accordi, melodia, basso,
+tempo e tonalità generati a caso, voce e base con un po' di "sporco" come dopo una vera separazione):
+
+```bash
+python valutazione/genera.py /tmp/banco 8      # crea 8 brani sintetici
+python valutazione/valuta.py /tmp/banco        # analizza e confronta con la verità
+```
+
+Risultati sugli 8 brani di riferimento (seed 7):
+
+| Misura | v0.1.0 | v0.2.0 |
+|---|---|---|
+| Accordi giusti (fondamentale + maggiore/minore, % del tempo) | 84,7% | 96,4% |
+| Tempo entro il 4% | 87,5% | 100% |
+| Tonalità (relativa = mezzo punto) | 93,8% | 93,8% |
+| Melodia, F1 sulle note | 0,89 | 0,90 |
+
+La melodia si può estrarre anche con CREPE (`METODO_MELODIA = "crepe"` in `analizza.py`, richiede `torchcrepe`):
+sul banco di prova non è risultato migliore ed è circa 7 volte più lento, quindi resta disattivato.

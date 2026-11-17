@@ -16,6 +16,7 @@ import soundfile as sf
 
 SR = 22050
 HOP = 256
+METODO_MELODIA = "pyin"  # "crepe" (più preciso) o "pyin" (più veloce, nessun modello)
 NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
 
 # Profili Krumhansl-Kessler per la tonalità
@@ -49,12 +50,47 @@ def estimate_key(chroma):
     return {"tonica": NOTE_NAMES[best[1]], "modo": best[2], "pc": best[1], "confidenza": round(float(best[0]), 3)}
 
 
-def pitch_track_notes(y, fmin, fmax, min_dur):
-    f0, voiced, prob = librosa.pyin(y, fmin=fmin, fmax=fmax, sr=SR, hop_length=HOP, frame_length=2048)
+def f0_crepe(y, fmin, fmax, n_frames):
+    """Intonazione con CREPE (rete neurale, più robusta di pYIN sulla voce cantata)."""
+    import torch
+    import torchcrepe
+
+    y16 = librosa.resample(y, orig_sr=SR, target_sr=16000)
+    audio = torch.tensor(y16, dtype=torch.float32)[None]
+    pitch, per = torchcrepe.predict(audio, 16000, hop_length=160, fmin=fmin, fmax=fmax, model="full",
+                                    batch_size=512, device="cpu", return_periodicity=True)
+    per = torchcrepe.filter.median(per, 3)[0].numpy()
+    pitch = pitch[0].numpy()
+    t_crepe = np.arange(len(pitch)) * 0.01
+    t = librosa.frames_to_time(np.arange(n_frames), sr=SR, hop_length=HOP)
+    f0 = np.interp(t, t_crepe, pitch)
+    p = np.interp(t, t_crepe, per)
+    return f0, p
+
+
+def pitch_track_notes(y, fmin, fmax, min_dur, metodo="pyin", split_onsets=False):
+    rms_all = librosa.feature.rms(y=y, hop_length=HOP)[0]
+    if metodo == "crepe":
+        f0, per = f0_crepe(y, fmin, fmax, len(rms_all))
+        loud = rms_all > 0.15 * np.percentile(rms_all[rms_all > 0], 90)
+        voiced = (per > 0.4) & loud
+    else:
+        f0, voiced, prob = librosa.pyin(y, fmin=fmin, fmax=fmax, sr=SR, hop_length=HOP, frame_length=2048)
+        n = min(len(f0), len(rms_all))
+        f0, voiced = f0[:n], voiced[:n]
     midi = np.where(voiced, librosa.hz_to_midi(np.nan_to_num(f0, nan=1.0)), np.nan)
     # Smussa le piccole oscillazioni e arrotonda al semitono
     m = np.round(sps.medfilt(np.nan_to_num(midi, nan=0.0), 5))
     m[~voiced] = 0
+    split = set()
+    if split_onsets:
+        # note ripetute (stessa altezza, nuova sillaba): separa dove la voce ha un attacco
+        ons = librosa.onset.onset_detect(y=y, sr=SR, hop_length=HOP, backtrack=False, delta=0.4)
+        k = 8  # ~90 ms: entrambe le metà devono essere note vere, non rumore
+        for o in ons:
+            if k <= o < len(m) - k and m[o] > 0 and np.all(m[o - k:o + k] == m[o]):
+                m[o - 1] = 0
+                split.add(int(o))
     times = librosa.frames_to_time(np.arange(len(m)), sr=SR, hop_length=HOP)
     rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
     rms = rms[: len(m)]
@@ -65,15 +101,17 @@ def pitch_track_notes(y, fmin, fmax, min_dur):
                 t0, t1 = times[start], times[min(i, len(times) - 1)]
                 if t1 - t0 >= min_dur:
                     vel = float(np.mean(rms[start:i])) if i > start else 0.0
-                    notes.append({"pitch": int(cur), "start": float(t0), "end": float(t1), "energia": vel})
+                    notes.append({"pitch": int(cur), "start": float(t0), "end": float(t1), "energia": vel, "_i": start})
             start, cur = i, v
     # Unisci note uguali separate da micro-pause
     merged = []
     for n in notes:
-        if merged and merged[-1]["pitch"] == n["pitch"] and n["start"] - merged[-1]["end"] < 0.05:
+        if merged and merged[-1]["pitch"] == n["pitch"] and n["start"] - merged[-1]["end"] < 0.05 and n["_i"] not in split:
             merged[-1]["end"] = n["end"]
         else:
             merged.append(n)
+    for n in merged:
+        n.pop("_i", None)
     return merged
 
 
@@ -165,7 +203,8 @@ def main(name, root=None):
     chords, chroma = estimate_chords(instr, beat_t, duration)
     key = estimate_key(chroma)
 
-    melody = pitch_track_notes(voc, librosa.note_to_hz("E2"), librosa.note_to_hz("C6"), 0.08)
+    melody = pitch_track_notes(voc, librosa.note_to_hz("E2"), librosa.note_to_hz("C6"), 0.08,
+                               metodo=METODO_MELODIA, split_onsets=True)
     # scarta note deboli (respiri, rientri dagli strumenti)
     if melody:
         thr = np.percentile([n["energia"] for n in melody], 15)
