@@ -145,7 +145,78 @@ def right_hand(sk, cfg, t):
 
 
 # ---------------------------------------------------------------- mano sinistra
-def left_hand(sk, cfg, t):
+def voicings(pcs, lo=43, top_max=59):
+    """Tutti i rivolti in posizione stretta (entro un'ottava) con la nota più bassa >= lo."""
+    out = []
+    for inv in range(len(pcs)):
+        order = pcs[inv:] + pcs[:inv]
+        for base in range(lo, lo + 12):
+            if base % 12 != order[0]:
+                continue
+            notes = [base]
+            for pc in order[1:]:
+                notes.append(notes[-1] + (pc - notes[-1]) % 12)
+            if notes[-1] <= top_max and notes[-1] - notes[0] <= 12:
+                out.append(notes)
+    return out
+
+
+def voice_lead(prev, pcs):
+    """Sceglie il rivolto più vicino all'accordo precedente: la mano si sposta il meno possibile."""
+    cands = voicings(pcs)
+    if not cands:
+        return sorted(place(pc, 48) for pc in pcs)
+    if prev is None:
+        # primo accordo: centrato intorno a Re3-Fa3
+        return min(cands, key=lambda v: abs(np.mean(v) - 53))
+    return min(cands, key=lambda v: sum(abs(a - b) for a, b in zip(v, prev)) + 0.3 * abs(np.mean(v) - 53))
+
+
+def bar_pieces(sk, b0, dur):
+    """Spezza [b0, b0+dur) alle stanghette di battuta."""
+    pos = b0
+    while pos < b0 + dur - 1e-6:
+        end_bar = (np.floor((pos + sk["pad_beat"]) / 4) + 1) * 4 - sk["pad_beat"]
+        d = min(b0 + dur, end_bar) - pos
+        yield pos, d
+        pos += d
+
+
+def left_hand_chords(sk, cfg):
+    """Mano sinistra ad accordi (triadi nei rivolti più comodi), ritmo secondo il livello."""
+    out, prev = [], None
+    for c in sk["_chords_t"]:
+        if c["root_pc"] is None:
+            continue
+        v = voice_lead(prev, chord_pcs(c))
+        prev = v
+        if cfg["lh"] == "lunghe":
+            # accordo tenuto per tutta la battuta (o finché dura)
+            for pos, d in bar_pieces(sk, c["beat"], c["durata_beat"]):
+                out.append({"pitches": list(v), "beat": pos, "durata_beat": d})
+        elif cfg["lh"] == "pattern":
+            # accordo sul primo e sul terzo tempo (minime)
+            for pos, d in bar_pieces(sk, c["beat"], c["durata_beat"]):
+                k = pos
+                while k < pos + d - 1e-6:
+                    step = min(2.0, pos + d - k)
+                    out.append({"pitches": list(v), "beat": k, "durata_beat": step})
+                    k += step
+        else:
+            # basso (fondamentale grave) sul tempo forte, poi l'accordo sugli altri tempi
+            root = place(c["root_pc"], 36)  # Do2..Si2
+            for pos, d in bar_pieces(sk, c["beat"], c["durata_beat"]):
+                out.append({"pitches": [root], "beat": pos, "durata_beat": 1.0 if d > 1 else d})
+                k = pos + 1
+                while k < pos + d - 1e-6:
+                    out.append({"pitches": list(v), "beat": k, "durata_beat": min(1.0, pos + d - k)})
+                    k += 1
+    return out
+
+
+def left_hand(sk, cfg, t, stile="accordi"):
+    if stile == "accordi":
+        return left_hand_chords(sk, cfg)
     out = []
     for c in sk["_chords_t"]:
         if c["root_pc"] is None:
@@ -185,7 +256,12 @@ def separate_hands(rh, lh):
         return min(lows) if lows else 127
     for n in lh:
         lim = rh_low_at(n["beat"], n["beat"] + n["durata_beat"]) - 1
-        n["pitches"] = [p - 12 if p > lim else p for p in n["pitches"]]
+        if len(n["pitches"]) > 1 and max(n["pitches"]) > lim:
+            low = [p - 12 for p in n["pitches"]]
+            # accordo: si sposta tutto un'ottava sotto se non diventa troppo grave, altrimenti si toglie la nota in conflitto
+            n["pitches"] = low if min(low) >= 43 else ([p for p in n["pitches"] if p <= lim] or [min(n["pitches"]) - 12])
+        else:
+            n["pitches"] = [p - 12 if p > lim else p for p in n["pitches"]]
     return lh
 
 
@@ -213,7 +289,7 @@ def check_playability(rh, lh, cfg):
 
 
 # ---------------------------------------------------------------- export
-def to_score(sk, rh, lh, livello, t):
+def to_score(sk, rh, lh, livello, t, pedale=False):
     from music21 import chord, clef, expressions, harmony, key as m21key, layout, meter, metadata, note, pitch, stream, tempo
 
     tonic = (NOTE_NAMES.index(sk["tonalita"]["tonica"]) + t) % 12
@@ -274,7 +350,7 @@ def to_score(sk, rh, lh, livello, t):
             te = expressions.TextExpression(f"[{s['sezione']}]")
             te.style.fontWeight = "bold"
             measures[idx].insert(0, te)
-    if livello == "avanzato":
+    if pedale:
         te = expressions.TextExpression("con pedale")
         te.style.fontStyle = "italic"
         md[0].insert(0, te)
@@ -300,7 +376,7 @@ def write_midi(sk, rh, lh, path):
     pm.write(str(path))
 
 
-def arrange(name, livello, ROOT):
+def arrange(name, livello, ROOT, stile_sx="accordi"):
     sk = json.loads((ROOT / "scheletro" / name / "scheletro.json").read_text())
     cfg = LIVELLI[livello]
     t = choose_transposition(sk["tonalita"], cfg["max_acc"])
@@ -327,11 +403,11 @@ def arrange(name, livello, ROOT):
                 merged.append(nc)
         sk["_chords_t"] = merged
     rh = right_hand(sk, cfg, t)
-    lh = separate_hands(rh, left_hand(sk, cfg, t))
+    lh = separate_hands(rh, left_hand(sk, cfg, t, stile_sx))
     report = check_playability(rh, lh, cfg)
     out = ROOT / "arrangiamenti" / name
     out.mkdir(parents=True, exist_ok=True)
-    score, k = to_score(sk, rh, lh, livello, t)
+    score, k = to_score(sk, rh, lh, livello, t, pedale=(stile_sx == "classica" and cfg["lh"] == "arpeggio"))
     xml = out / f"{livello}.musicxml"
     score.write("musicxml", fp=str(xml))
     pages = render_pdf(xml, out / f"{livello}.pdf")
@@ -341,10 +417,10 @@ def arrange(name, livello, ROOT):
     return report
 
 
-def main(name, livelli, root=None):
+def main(name, livelli, root=None, stile_sx="accordi"):
     ROOT = Path(root) if root else Path(__file__).parent / "data"
     out = ROOT / "arrangiamenti" / name
-    reports = {lv: arrange(name, lv, ROOT) for lv in livelli}
+    reports = {lv: arrange(name, lv, ROOT, stile_sx) for lv in livelli}
     (out / "controllo.json").write_text(json.dumps(reports, indent=1, ensure_ascii=False))
     for lv, r in reports.items():
         print(name, lv, r["tonalita"], f"T{r['trasposizione_semitoni']:+d}", "RH", r["mano_destra"]["note"], "LH", r["mano_sinistra"]["note"],
